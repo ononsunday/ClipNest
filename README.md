@@ -1,4 +1,4 @@
-# ClipNest
+# ClipNest 电脑超级剪切板
 
 ClipNest 是一个 Windows 剪贴板管理器，使用 Python、PySide6 和 SQLite。它保存新复制的文本、代码、链接、邮箱、颜色和图片，支持搜索、收藏、置顶和再次复制。默认快捷键是 `Ctrl + Alt + V`。
 
