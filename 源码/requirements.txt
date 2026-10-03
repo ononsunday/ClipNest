@@ -1,0 +1,5 @@
+# Exact release environment: runtime, tests and Windows directory build.
+PySide6==6.11.2
+Pygments==2.21.0
+pytest==9.1.1
+PyInstaller==6.22.3

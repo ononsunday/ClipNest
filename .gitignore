@@ -1,0 +1,26 @@
+# Python environment and generated files
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.spec
+*.egg-info/
+.coverage
+htmlcov/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+qa-output/
+.clipnest-data/
+
+# Local packaged application; publish downloadable builds as GitHub Releases
+/ClipNest.exe
+/_internal/
+
+# Duplicate documents already kept with the source
+/docs/
