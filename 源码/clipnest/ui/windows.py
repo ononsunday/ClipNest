@@ -1,12 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from html import escape
-from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QPoint
+from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QPoint, QSize
 from PySide6.QtGui import QPixmap, QImage, QFont, QShortcut, QKeySequence, QCursor, QColor
 from PySide6.QtWidgets import (QApplication, QWidget, QMainWindow, QDialog, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox, QListWidget, QListWidgetItem,
     QSplitter, QTextBrowser, QStackedWidget, QMessageBox, QFileDialog, QInputDialog,
-    QCheckBox, QGraphicsDropShadowEffect, QPlainTextEdit, QDialogButtonBox, QMenu)
+    QCheckBox, QGraphicsDropShadowEffect, QPlainTextEdit, QDialogButtonBox, QMenu, QGridLayout)
 from pygments import highlight
 from pygments.lexers import get_lexer_by_name
 from pygments.formatters import HtmlFormatter
@@ -16,6 +16,7 @@ from clipnest.ui.theme import apply_theme
 from clipnest.ui.widgets import PassiveComboBox
 from clipnest.ui.actions import HistoryActions
 from clipnest.ui.paste import PasteController
+from clipnest.ui.art import ArtWidget, nav_icon
 from clipnest.platform import windows as win_api
 from clipnest.platform.windows import bring_to_front, set_startup
 
@@ -35,8 +36,10 @@ def code_html(item, dark):
         lexer = get_lexer_by_name(language, stripnl=False, ensurenl=False)
     except Exception:
         lexer = get_lexer_by_name("text", stripnl=False, ensurenl=False)
-    formatter = HtmlFormatter(noclasses=True, style="monokai" if dark else "friendly")
-    return highlight(text, lexer, formatter)
+    formatter = HtmlFormatter(noclasses=True, style="monokai" if dark else "friendly", nowrap=True)
+    body = highlight(text, lexer, formatter)
+    foreground = "#edf0f5" if dark else "#25344a"
+    return f'<pre style="font-family:Consolas; font-size:13px; color:{foreground}; margin:0; white-space:pre;">{body}</pre>'
 
 
 class SearchPane(QWidget):
@@ -48,6 +51,7 @@ class SearchPane(QWidget):
     toggle_requested = Signal(object, str)
     menu_opened = Signal()
     menu_closed = Signal()
+    reset_requested = Signal()
 
     def __init__(self, repository, jobs, parent=None, compact=False):
         super().__init__(parent)
@@ -60,6 +64,7 @@ class SearchPane(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.search = QLineEdit()
+        self.search.setObjectName("searchField")
         self.search.setPlaceholderText("搜索复制过的内容、名称、备注或标签…")
         self.search.setMinimumHeight(43)
         layout.addWidget(self.search)
@@ -105,7 +110,32 @@ class SearchPane(QWidget):
             self.list.itemDoubleClicked.connect(lambda item: self.copy_requested.emit(item.data(Qt.ItemDataRole.UserRole)) if not self.bulk_button.isChecked() else None)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.context_menu)
-        layout.addWidget(self.list, 1)
+        # 空状态和真实结果共用同一块区域，不把插画叠到可点击记录上。
+        self.results_stack = QStackedWidget()
+        self.results_stack.addWidget(self.list)
+        self.empty = QWidget()
+        self.empty.setObjectName("emptyState")
+        empty_layout = QVBoxLayout(self.empty)
+        empty_layout.setContentsMargins(16, 8, 16, 8)
+        empty_layout.addStretch()
+        self.empty_art = ArtWidget("sleep.jpg", mode="contain", radius=12)
+        self.empty_art.setFixedHeight(175 if compact else 160)
+        empty_layout.addWidget(self.empty_art)
+        self.empty_title = QLabel("还没有记录")
+        self.empty_title.setObjectName("emptyTitle")
+        self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(self.empty_title)
+        self.empty_caption = QLabel("复制过的内容会显示在这里。")
+        self.empty_caption.setObjectName("emptyCaption")
+        self.empty_caption.setWordWrap(True)
+        self.empty_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(self.empty_caption)
+        self.empty_button = button("刷新记录", self.reset_or_refresh)
+        self.empty_button.setMaximumWidth(145)
+        empty_layout.addWidget(self.empty_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addStretch()
+        self.results_stack.addWidget(self.empty)
+        layout.addWidget(self.results_stack, 1)
         footer = QHBoxLayout()
         self.count = QLabel("正在读取…")
         self.count.setObjectName("muted")
@@ -190,6 +220,8 @@ class SearchPane(QWidget):
             self.list.blockSignals(False)
             self.more.setVisible(len(items) == 100)
             self.count.setText(f"已显示 {self.list.count()} 条" if self.list.count() else "还没有记录 · 复制内容后会显示在这里")
+            self.results_stack.setCurrentIndex(0 if self.list.count() else 1)
+            self.update_empty()
             if not append:
                 if not self.bulk_button.isChecked():
                     self.list.setCurrentRow(selected)
@@ -204,6 +236,38 @@ class SearchPane(QWidget):
                 self.more.setEnabled(True)
                 self.count.setText(message)
         self.jobs.submit(lambda: self.repo.search(**params), done, fail)
+
+    def update_empty(self):
+        params = self.parameters()
+        has_query = bool(params.get("query", "").strip())
+        other_filters = any(params.get(key) for key in ("kind", "since", "pinned", "tag", "group"))
+        if has_query or other_filters:
+            self.empty_title.setText("没有找到匹配内容")
+            self.empty_caption.setText("换个关键词，或清除筛选试试。")
+            self.empty_button.setText("清除筛选")
+            self.empty_art.hide()
+        elif params.get("favorite"):
+            self.empty_title.setText("收藏夹为空")
+            self.empty_caption.setText("把常用内容收藏在这里")
+            self.empty_button.setText("查看历史")
+            self.empty_art.show()
+        else:
+            self.empty_title.setText("还没有记录")
+            self.empty_caption.setText("复制过的内容会显示在这里。")
+            self.empty_button.setText("刷新记录")
+            self.empty_art.show()
+
+    def reset_or_refresh(self):
+        params = self.parameters()
+        if any(params.get(key) for key in ("query", "kind", "since", "favorite", "pinned", "tag", "group")):
+            self.search.clear()
+            self.kind.setCurrentIndex(0)
+            self.time.setCurrentIndex(0)
+            self.favorite.setChecked(False)
+            self.pinned.setChecked(False)
+            self.scope = {}
+            self.reset_requested.emit()
+        self.refresh()
 
     def set_bulk_mode(self, enabled):
         self.list.set_bulk_mode(enabled)
@@ -228,7 +292,7 @@ class SearchPane(QWidget):
             action.setEnabled(not self.bulk_button.isChecked())
             action.triggered.connect(lambda: self.copy_requested.emit(record))
             if self.compact:
-                menu.addAction("仅复制", lambda: self.parent().copy_only(record))
+                menu.addAction("仅复制", lambda: self.window().copy_only(record))
             menu.addSeparator()
             menu.addAction("取消置顶" if record["pinned"] else "置顶", lambda: self.toggle_requested.emit(record, "pinned"))
             menu.addAction("取消收藏" if record["favorite"] else "收藏", lambda: self.toggle_requested.emit(record, "favorite"))
@@ -287,7 +351,7 @@ class QuickWindow(QDialog):
         self.setObjectName("quickWindow")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("ClipNest 快捷搜索")
-        self.resize(600, 620)
+        self.resize(550, 650)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
         self.card = QWidget()
@@ -306,27 +370,60 @@ class QuickWindow(QDialog):
         self.drag_header.setToolTip("按住这里拖动窗口，松开后保存位置")
         header = QHBoxLayout(self.drag_header)
         header.setContentsMargins(0, 0, 0, 0)
+        grip = QLabel("⠿")
+        grip.setObjectName("muted")
+        grip.setFixedWidth(18)
+        grip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        header.addWidget(grip)
         title = QLabel("ClipNest")
         self.brand_label = title
-        title.setObjectName("brand")
+        title.setObjectName("quickBrand")
         title.setCursor(Qt.CursorShape.OpenHandCursor)
         title.setToolTip("按住标题拖动窗口")
         header.addWidget(title)
         header.addStretch()
-        self.close_button = button("关闭", self.hide)
+        self.header_art = ArtWidget("quick_chibi.png", mode="contain", radius=0)
+        self.header_art.setFixedSize(56, 56)
+        header.addWidget(self.header_art)
+        self.close_button = button("×", self.hide)
+        self.close_button.setFixedSize(32, 32)
+        self.close_button.setToolTip("关闭快捷浮窗（Esc）")
+        self.close_button.setAutoDefault(False)
         header.addWidget(self.close_button)
         layout.addWidget(self.drag_header)
         self.pane = SearchPane(repo, jobs, self, compact=True)
         self.pane.copy_requested.connect(lambda item: self.choose(item, copy))
+        # 收藏入口已有类型按钮；保留数据控件，但不重复占用一行视觉空间。
+        self.pane.favorite.hide()
+        chip_bar = QHBoxLayout()
+        chip_bar.setSpacing(6)
+        self.chips = {}
+        for key, label in [("", "全部"), ("text", "文本"), ("code", "代码"), ("image", "图片"), ("favorite", "收藏")]:
+            chip = button(label, lambda _checked=False, key=key: self.choose_chip(key))
+            chip.setObjectName("quickChip")
+            chip.setCheckable(True)
+            chip.setMinimumHeight(30)
+            self.chips[key] = chip
+            chip_bar.addWidget(chip)
+        self.pane.layout().insertLayout(1, chip_bar)
+        self.pane.kind.currentIndexChanged.connect(self.sync_chips)
+        self.pane.favorite.toggled.connect(self.sync_chips)
+        self.sync_chips()
         layout.addWidget(self.pane, 1)
-        self.hint = QLabel("单击记录粘贴 · 右键整理 · 按住顶部标题拖动")
+        self.hint = QLabel("单击粘贴 · 右键整理 · 拖动标题移动")
         self.hint.setObjectName("muted")
         self.hint.setWordWrap(True)
         layout.addWidget(self.hint)
+        self.retention = QLabel()
+        self.retention.setObjectName("muted")
+        self.retention.setToolTip("设置中可选择粘贴后保留或自动关闭浮窗")
+        layout.addWidget(self.retention)
+        self.sync_retention()
         self.pane.search.installEventFilter(self)
         self._focus_controls = [self.pane.search, self.pane.list, self.pane.kind, self.pane.time,
             self.pane.favorite, self.pane.pinned, self.pane.more, self.close_button,
-            self.pane.bulk_button, self.pane.select_all_button, self.pane.delete_selected_button, self.pane.clear_button]
+            self.pane.bulk_button, self.pane.select_all_button, self.pane.delete_selected_button, self.pane.clear_button,
+            self.pane.empty_button, *self.chips.values()]
         self._focus_policies = {control: control.focusPolicy() for control in self._focus_controls}
         # 下拉菜单也使用不激活显示，不能在被动模式中抢走原应用焦点。
         self._combo_popups = [self.pane.kind.view().window(), self.pane.time.view().window()]
@@ -350,6 +447,21 @@ class QuickWindow(QDialog):
         self.pane.menu_closed.connect(lambda: QTimer.singleShot(0, self.return_to_target))
         QShortcut(QKeySequence("Esc"), self, activated=self.hide)
         self._set_passive(True)
+
+    def choose_chip(self, key):
+        self.pane.favorite.setChecked(key == "favorite")
+        index = self.pane.kind.findData(key if key not in ("", "favorite") else "")
+        self.pane.kind.setCurrentIndex(max(0, index))
+        self.sync_chips()
+
+    def sync_chips(self, *_):
+        active = "favorite" if self.pane.favorite.isChecked() else self.pane.kind.currentData()
+        for key, chip in self.chips.items():
+            chip.setChecked(key == active)
+
+    def sync_retention(self):
+        close = bool(self.settings and self.settings.get("close_after_paste", False))
+        self.retention.setText(("粘贴后关闭" if close else "粘贴后保留") + "  ·  Esc 关闭")
 
     def choose(self, item, copy):
         if not item or self.pane.bulk_button.isChecked() or self._paste_busy:
@@ -530,10 +642,11 @@ class QuickWindow(QDialog):
         position = self._position()
         screen, valid = self._screen_for_position(position)
         area = screen.availableGeometry()
-        self.resize(min(600, area.width() - 40), min(620, area.height() - 40))
+        self.resize(min(550, area.width() - 40), min(650, area.height() - 40))
         self.move(self._bounded(position, screen) if valid else area.center() - self.rect().center())
         win_api.show_no_activate_topmost(self)
-        self.hint.setText("单击记录粘贴 · 右键整理 · 按住顶部标题拖动")
+        self.hint.setText("单击粘贴 · 右键整理 · 拖动标题移动")
+        self.sync_retention()
         self.pane.refresh()
 
 
@@ -545,7 +658,7 @@ class MainWindow(QMainWindow):
         self.detail_token = 0
         self.exiting = False
         self.setWindowTitle("ClipNest · 智能剪贴板")
-        self.resize(1230, 780)
+        self.resize(1230, 820)
         self.setMinimumSize(920, 610)
         central = QWidget()
         self.setCentralWidget(central)
@@ -553,19 +666,27 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 18, 0)
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(190)
+        self.sidebar = sidebar
+        sidebar.setFixedWidth(205)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(16, 25, 16, 18)
+        side.setContentsMargins(12, 20, 12, 14)
         brand = QLabel("ClipNest")
         brand.setObjectName("brand")
         side.addWidget(brand)
         tag = QLabel("找回每一次复制")
         tag.setObjectName("muted")
         side.addWidget(tag)
-        side.addSpacing(25)
+        side.addSpacing(14)
         self.nav = QListWidget()
         self.nav.setObjectName("navigation")
-        self.nav.addItems(["最近记录", "全部历史", "收藏夹", "置顶记录", "代码片段", "文本工具", "设置"])
+        self.nav.setIconSize(QSize(32, 32))
+        for index, (label, key) in enumerate([("最近记录", "recent"), ("全部历史", "all"),
+                ("收藏夹", "favorite"), ("代码片段", "code"), ("自定义标签", "tags"),
+                ("文本工具", "tools"), ("设置", "settings")]):
+            row = QListWidgetItem(nav_icon(index), label)
+            row.setData(Qt.ItemDataRole.UserRole, key)
+            row.setSizeHint(QSize(170, 52))
+            self.nav.addItem(row)
         self.nav.currentRowChanged.connect(self.navigate)
         side.addWidget(self.nav, 1)
         self.group = QComboBox()
@@ -579,13 +700,20 @@ class MainWindow(QMainWindow):
         side.addWidget(self.tags)
         side.addSpacing(12)
         self.pause = button("暂停记录", self.toggle_pause)
+        self.pause.setObjectName("sidebarPause")
+        self.pause.setIcon(nav_icon(7))
+        self.pause.setIconSize(QSize(32, 32))
+        self.pause.setMinimumHeight(46)
         side.addWidget(self.pause)
         self.local = QLabel("数据仅保存在本机")
-        self.local.setObjectName("muted")
+        self.local.setObjectName("localStatus")
+        self.local.setWordWrap(True)
         side.addWidget(self.local)
         root.addWidget(sidebar)
-        content = QVBoxLayout()
-        content.setContentsMargins(18, 25, 0, 18)
+        workspace = QWidget()
+        workspace.setObjectName("workspace")
+        content = QVBoxLayout(workspace)
+        content.setContentsMargins(18, 18, 0, 14)
         header = QHBoxLayout()
         self.heading = QLabel("最近记录")
         self.heading.setObjectName("heading")
@@ -597,7 +725,10 @@ class MainWindow(QMainWindow):
         caption = QLabel("搜索、整理，再次使用。双击记录即可复制。")
         caption.setObjectName("muted")
         content.addWidget(caption)
-        content.addSpacing(10)
+        self.hero = ArtWidget("banner.png", mode="cover", focus_y=0.14, radius=12)
+        self.hero.setFixedHeight(142)
+        content.addWidget(self.hero)
+        content.addSpacing(4)
         splitter = QSplitter()
         self.pane = SearchPane(repo, jobs)
         self.pane.setMinimumWidth(335)
@@ -605,8 +736,10 @@ class MainWindow(QMainWindow):
         self.pane.copy_requested.connect(self.copy_item)
         splitter.addWidget(self.pane)
         detail = QWidget()
+        detail.setObjectName("detailPanel")
+        detail.setMinimumWidth(290)
         detail_layout = QVBoxLayout(detail)
-        detail_layout.setContentsMargins(12, 0, 0, 0)
+        detail_layout.setContentsMargins(16, 14, 16, 14)
         self.title = QLabel("选择一条记录")
         self.title.setObjectName("detailTitle")
         self.title.setWordWrap(True)
@@ -630,29 +763,32 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.text)
         self.stack.addWidget(self.image)
         detail_layout.addWidget(self.stack, 1)
+        self.portrait = ArtWidget("portrait.jpg", mode="cover", focus_y=0.20, radius=10)
+        self.portrait.setFixedHeight(190)
+        detail_layout.addWidget(self.portrait)
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setObjectName("muted")
         detail_layout.addWidget(self.note)
         actions = QHBoxLayout()
-        self.copy_btn = button("复制原始内容", lambda: self.copy_item(self.item), True)
+        self.copy_btn = button("复制", lambda: self.copy_item(self.item), True)
         self.fav_btn = button("收藏", lambda: self.toggle("favorite"))
         self.pin_btn = button("置顶", lambda: self.toggle("pinned"))
         actions.addWidget(self.copy_btn)
         actions.addWidget(self.fav_btn)
         actions.addWidget(self.pin_btn)
         detail_layout.addLayout(actions)
-        actions2 = QHBoxLayout()
+        actions2 = QGridLayout()
         self.edit_btn = button("整理信息", self.edit_metadata)
         self.edit_content_btn = button("编辑原文", self.edit_content)
         self.tools_btn = button("文本处理", self.tools)
         self.delete_btn = button("删除", self.delete_item)
         self.delete_btn.setObjectName("danger")
-        for btn in [self.edit_btn, self.edit_content_btn, self.tools_btn, self.delete_btn]:
-            actions2.addWidget(btn)
+        for index, btn in enumerate([self.edit_btn, self.edit_content_btn, self.tools_btn, self.delete_btn]):
+            actions2.addWidget(btn, index // 2, index % 2)
         detail_layout.addLayout(actions2)
         splitter.addWidget(detail)
-        splitter.setSizes([400, 470])
+        splitter.setSizes([545, 365])
         content.addWidget(splitter, 1)
         bottom = QHBoxLayout()
         self.summary = QLabel()
@@ -663,7 +799,7 @@ class MainWindow(QMainWindow):
         bottom.addWidget(button("导出", self.export_data))
         bottom.addWidget(button("清空历史", self.clear_history))
         content.addLayout(bottom)
-        root.addLayout(content, 1)
+        root.addWidget(workspace, 1)
         self.quick = QuickWindow(repo, jobs, self.copy_item, settings=settings)
         self.actions = HistoryActions(repo, jobs, self, self.notice)
         self.actions.changed.connect(self.refresh)
@@ -672,11 +808,32 @@ class MainWindow(QMainWindow):
         self.pane.delete_many_requested.connect(self.actions.delete_selected)
         self.pane.clear_requested.connect(self.actions.clear_all)
         self.pane.toggle_requested.connect(self.actions.toggle_record)
+        self.pane.reset_requested.connect(self.reset_history)
         hotkey.triggered.connect(self.quick.summon)
         self.nav.setCurrentRow(0)
         self.show_item(None)
         self.update_pause()
         self.refresh()
+        self._sync_art_theme()
+
+    def _sync_art_theme(self):
+        dark = bool(QApplication.instance().property("clipnestDark"))
+        self.hero.setVisible(not dark)
+        self.portrait.setVisible(dark and (not self.item or self.item.get("kind") != "image"))
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.StyleChange and hasattr(self, "portrait"):
+            self._sync_art_theme()
+
+    def reset_history(self):
+        for control in (self.group, self.tags):
+            control.blockSignals(True)
+            control.setCurrentIndex(0)
+            control.blockSignals(False)
+        self.nav.setCurrentRow(0)
+        self.heading.setText("最近记录")
+        self.pane.scope = {}
 
     def notice(self, text):
         self.statusBar().showMessage(text, 9000)
@@ -706,17 +863,24 @@ class MainWindow(QMainWindow):
             control.blockSignals(False)
 
     def navigate(self, row):
-        if row == 5:
+        entry = self.nav.item(row)
+        if entry is None:
+            return
+        key = entry.data(Qt.ItemDataRole.UserRole)
+        if key == "tools":
             self.tools()
             return
-        if row == 6:
+        if key == "settings":
             self.open_settings()
             return
         self.heading.setText(self.nav.item(row).text())
-        self.pane.scope = {0: {"limit": 100}, 1: {}, 2: {"favorite": True}, 3: {"pinned": True}, 4: {"kind": "code"}}.get(row, {})
+        self.pane.scope = {"recent": {"limit": 100}, "favorite": {"favorite": True}, "code": {"kind": "code"}}.get(key, {})
         self.filter_group(refresh=False)
         self.filter_tag(refresh=False)
         self.pane.refresh()
+        if key == "tags":
+            self.tags.setFocus(Qt.FocusReason.OtherFocusReason)
+            self.notice("从左侧标签下拉框选择标签")
 
     def filter_group(self, *_args, refresh=True):
         if self.group.currentData():
@@ -736,6 +900,7 @@ class MainWindow(QMainWindow):
 
     def show_item(self, item):
         self.item = item
+        self._sync_art_theme()
         self.detail_token += 1
         token = self.detail_token
         for control in [self.copy_btn, self.fav_btn, self.pin_btn, self.edit_btn, self.delete_btn, self.language]:
@@ -894,7 +1059,7 @@ class MainWindow(QMainWindow):
 
     def update_pause(self):
         self.pause.setText("恢复记录" if self.monitor.paused else "暂停记录")
-        self.local.setText("记录已暂停" if self.monitor.paused else "正在记录 · 仅本机保存")
+        self.local.setText("● 记录已暂停 · 数据仅在本机" if self.monitor.paused else "● 正在记录 · 仅本机保存")
         if hasattr(self, "tray_pause"):
             self.tray_pause.setText("恢复记录" if self.monitor.paused else "暂停记录")
 
@@ -928,6 +1093,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "设置保存失败", "请检查数据目录权限或 Windows 启动项权限。")
             return
         apply_theme(self.app, values["theme"])
+        self._sync_art_theme()
+        self.quick.sync_retention()
         self.quick_btn.setText(values["hotkey"])
         self.show_item(self.item)
         self.notice("设置已保存")

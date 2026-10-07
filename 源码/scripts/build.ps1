@@ -43,6 +43,7 @@ try {
         "--specpath", $ClipNestBuild,
         "--paths", $ClipNestRoot,
         "--additional-hooks-dir", (Join-Path $PSScriptRoot "hooks"),
+        "--add-data", ((Join-Path $ClipNestRoot "clipnest\assets") + ";clipnest\assets"),
         "--collect-submodules", "pygments.lexers",
         "--collect-submodules", "pygments.styles"
     )

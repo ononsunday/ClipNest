@@ -29,12 +29,16 @@ def smoke_test(app, directory):
     settings = Settings(directory)
     settings.set("paused", True)
     repo = Repository(directory / "history.db", directory / "images")
-    text = "学习资料：SELECT id FROM students;\n"
+    text = "-- 学习资料\nSELECT name, score\nFROM students\nWHERE score >= 60;\n"
     first = repo.add_text(text, "smoke-test")
     duplicate = repo.add_text(text, "smoke-test")
     assert first["id"] == duplicate["id"]
     assert len(repo.search("学习资料")) == 1
-    repo.update(first["id"], favorite=True, pinned=True, tags=["测试"], group_name="验证")
+    repo.update(first["id"], favorite=True, pinned=True, title="常用 SQL 查询",
+                language="SQL", kind="code", tags=["SQL", "学习"], group_name="验证")
+    repo.add_text("会议要点\n1. 整理学习资料\n2. 完成课程练习", "smoke-test")
+    repo.add_text("https://example.com/docs", "smoke-test")
+    repo.add_text("def greet(name):\n    return f'Hello, {name}'\n", "smoke-test")
     image = QImage(120, 80, QImage.Format.Format_ARGB32)
     image.fill(QColor("#6eb7ff"))
     picture = repo.add_image(image, "smoke-test")
@@ -45,6 +49,8 @@ def smoke_test(app, directory):
     hotkey = HotkeyManager()
     apply_theme(app, "light")
     window = MainWindow(repo, settings, jobs, monitor, hotkey, app)
+    window.pane.requested_id = first["id"]
+    window.pane.refresh()
     window.setWindowIcon(app_icon())
     window.show()
     for _ in range(80):
@@ -53,9 +59,18 @@ def smoke_test(app, directory):
         sleep(0.025)
     assert window.isVisible() and window.pane.list.count() >= 2
     window.grab().save(str(directory / "light.png"))
+    assert all(not window.nav.item(i).icon().isNull() for i in range(7))
+    assert not window.pause.icon().isNull() and not window.hero._pixmap.isNull()
+    settings.set("theme", "dark")
     apply_theme(app, "dark")
+    window.show_item(window.item)
+    for _ in range(20):
+        app.processEvents()
+        sleep(0.025)
     app.processEvents()
     window.grab().save(str(directory / "dark.png"))
+    assert window.portrait.isVisible() and not window.hero.isVisible()
+    window.quick.pane.requested_id = first["id"]
     window.quick.summon()
     for _ in range(80):
         app.processEvents()
@@ -69,9 +84,38 @@ def smoke_test(app, directory):
     window.quick.pane.bulk_button.setChecked(True)
     window.quick.pane.list.selectAll()
     app.processEvents()
-    assert len(window.quick.pane.list.selected_records()) == 2
+    assert len(window.quick.pane.list.selected_records()) == 5
     window.quick.grab().save(str(directory / "quick-bulk.png"))
     window.quick.pane.bulk_button.setChecked(False)
+    settings.set("theme", "light")
+    apply_theme(app, "light")
+    app.processEvents()
+    window.quick.grab().save(str(directory / "quick-light.png"))
+    assert not window.quick.header_art._pixmap.isNull()
+    # 收藏空态使用真实筛选和隔离数据，不启动监听或触碰系统剪贴板。
+    repo.update(first["id"], favorite=False)
+    window.quick.choose_chip("favorite")
+    window.quick.pane.refresh()
+    for _ in range(100):
+        app.processEvents()
+        sleep(0.025)
+        if not window.quick.pane.busy:
+            break
+    assert window.quick.pane.results_stack.currentWidget() is window.quick.pane.empty
+    assert window.quick.pane.empty_title.text() == "收藏夹为空"
+    window.quick.grab().save(str(directory / "quick-empty.png"))
+    repo.update(first["id"], favorite=True)
+    window.quick.choose_chip("")
+    window.quick.pane.search.setText("不存在的布局测试关键词")
+    window.quick.pane.refresh()
+    for _ in range(100):
+        app.processEvents()
+        sleep(0.025)
+        if not window.quick.pane.busy:
+            break
+    assert window.quick.pane.empty_title.text() == "没有找到匹配内容"
+    assert not window.quick.pane.empty_art.isVisible()
+    window.quick.grab().save(str(directory / "quick-no-results.png"))
     from clipnest.ui.dialogs import SettingsDialog
     options = SettingsDialog(settings)
     options.show()
@@ -88,7 +132,7 @@ def smoke_test(app, directory):
     monitor.stop()
     hotkey.unregister()
     jobs.close()
-    (directory / "smoke-result.json").write_text(json.dumps({"passed": True, "native_platform": app.platformName(), "records": repo.stats()["total"], "screens": len(app.screens()), "device_pixel_ratio": app.primaryScreen().devicePixelRatio()}, indent=2), encoding="utf-8")
+    (directory / "smoke-result.json").write_text(json.dumps({"passed": True, "native_platform": app.platformName(), "records": repo.stats()["total"], "screens": len(app.screens()), "device_pixel_ratio": app.primaryScreen().devicePixelRatio(), "theme_assets": True, "navigation_icons": 8}, indent=2), encoding="utf-8")
     return 0
 
 

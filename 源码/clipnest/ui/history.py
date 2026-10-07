@@ -1,6 +1,8 @@
 from datetime import datetime
-from PySide6.QtCore import Qt, QSize, QRect, QRectF, QModelIndex, QPersistentModelIndex, Signal
-from PySide6.QtGui import QColor, QPainter, QFont, QPen
+from collections import OrderedDict
+from urllib.parse import urlsplit
+from PySide6.QtCore import Qt, QSize, QRect, QRectF, QModelIndex, QPersistentModelIndex, Signal, QFileInfo
+from PySide6.QtGui import QColor, QPainter, QFont, QPen, QImageReader, QPixmap, QPainterPath
 from PySide6.QtWidgets import QApplication, QListWidget, QListWidgetItem, QStyledItemDelegate, QStyle
 
 KINDS = {"text": "文本", "code": "代码", "url": "链接", "email": "邮箱", "image": "图片", "color": "颜色"}
@@ -8,7 +10,7 @@ KINDS = {"text": "文本", "code": "代码", "url": "链接", "email": "邮箱",
 
 def _delete_rect(rect):
     """删除按钮的绘制与点击检测共用同一组视口坐标。"""
-    return QRect(rect.right() - 43, rect.top() + (rect.height() - 28) // 2, 28, 28)
+    return QRect(rect.right() - 46, rect.top() + (rect.height() - 32) // 2, 32, 32)
 
 
 class HistoryList(QListWidget):
@@ -131,8 +133,101 @@ class HistoryList(QListWidget):
 
 
 class HistoryDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 每张仅解码至 80 像素，缓存有上限；不读取大尺寸原图或剪贴板。
+        self._thumbnails = OrderedDict()
+
     def sizeHint(self, option, index):
-        return QSize(260, 100)
+        return QSize(260, 96)
+
+    def _thumbnail(self, record):
+        path = record.get("thumbnail_path", "")
+        if not path:
+            return QPixmap()
+        if path in self._thumbnails:
+            self._thumbnails.move_to_end(path)
+            return self._thumbnails[path]
+        pixmap = QPixmap()
+        info = QFileInfo(path)
+        # 导入包中的异常缩略图也不能在绘制时触发无限解码。
+        if info.isFile() and info.size() <= 2 * 1024 * 1024:
+            reader = QImageReader(path)
+            reader.setAutoTransform(True)
+            dimensions = reader.size()
+            if dimensions.isValid() and max(dimensions.width(), dimensions.height()) <= 16000:
+                reader.setScaledSize(dimensions.scaled(QSize(80, 80), Qt.AspectRatioMode.KeepAspectRatio))
+                pixmap = QPixmap.fromImage(reader.read())
+        self._thumbnails[path] = pixmap
+        while len(self._thumbnails) > 96:
+            self._thumbnails.popitem(last=False)
+        return pixmap
+
+    @staticmethod
+    def _summary(record):
+        kind = record.get("kind", "text")
+        text = str(record.get("text", ""))
+        lines = [line.strip() for line in text[:600].splitlines() if line.strip()]
+        first = lines[0] if lines else ""
+        title = record.get("title") or ""
+        note = " ".join(str(record.get("notes", ""))[:200].split())
+        if kind == "image":
+            return title or "图片", note or f"{record.get('width', 0)} × {record.get('height', 0)} 像素"
+        if kind == "code":
+            language = record.get("language", "")
+            return title or (f"{language} 代码" if language else "代码片段"), first
+        if kind == "url":
+            try:
+                domain = urlsplit(text).netloc
+            except ValueError:
+                domain = ""
+            return title or domain or "链接", first
+        if title:
+            return str(title), first or note
+        if kind == "color":
+            return first or "颜色", note or "颜色代码"
+        if kind == "email":
+            return first or "邮箱", note or "邮箱地址"
+        return first or "文本", note or " ".join(lines[1:]) or f"文本 · {len(text)} 个字符"
+
+    @staticmethod
+    def _type_icon(painter, kind, rect, color):
+        """图标直接用矢量绘制，兼容 Windows 字体与高 DPI。"""
+        cx, cy = rect.center().x(), rect.center().y()
+        painter.setPen(QPen(color, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if kind == "code":
+            painter.drawLine(cx - 5, cy - 6, cx - 11, cy)
+            painter.drawLine(cx - 11, cy, cx - 5, cy + 6)
+            painter.drawLine(cx + 5, cy - 6, cx + 11, cy)
+            painter.drawLine(cx + 11, cy, cx + 5, cy + 6)
+            painter.drawLine(cx + 2, cy - 8, cx - 2, cy + 8)
+        elif kind == "url":
+            painter.save()
+            painter.translate(cx, cy)
+            painter.rotate(-35)
+            painter.drawRoundedRect(QRectF(-12, -5, 15, 10), 5, 5)
+            painter.drawRoundedRect(QRectF(-3, -5, 15, 10), 5, 5)
+            painter.restore()
+        elif kind == "email":
+            painter.drawRoundedRect(QRectF(cx - 11, cy - 8, 22, 16), 3, 3)
+            painter.drawLine(cx - 10, cy - 6, cx, cy + 1)
+            painter.drawLine(cx, cy + 1, cx + 10, cy - 6)
+        elif kind == "color":
+            painter.drawEllipse(QRectF(cx - 9, cy - 9, 18, 18))
+            painter.drawLine(cx, cy - 7, cx, cy + 7)
+            painter.drawLine(cx - 7, cy, cx + 7, cy)
+        elif kind == "image":
+            painter.drawRoundedRect(QRectF(cx - 11, cy - 9, 22, 18), 3, 3)
+            painter.drawEllipse(QRectF(cx + 2, cy - 5, 3, 3))
+            painter.drawLine(cx - 9, cy + 6, cx - 3, cy - 1)
+            painter.drawLine(cx - 3, cy - 1, cx + 2, cy + 4)
+            painter.drawLine(cx + 2, cy + 4, cx + 6, cy + 1)
+            painter.drawLine(cx + 6, cy + 1, cx + 9, cy + 5)
+        else:
+            painter.drawRoundedRect(QRectF(cx - 8, cy - 11, 16, 22), 3, 3)
+            for offset, width in [(-5, 10), (0, 10), (5, 7)]:
+                painter.drawLine(cx - 5, cy + offset, cx - 5 + width, cy + offset)
 
     def paint(self, painter, option, index):
         record = index.data(Qt.ItemDataRole.UserRole) or {}
@@ -140,19 +235,32 @@ class HistoryDelegate(QStyledItemDelegate):
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         view = self.parent()
         bulk = bool(view.property("clipnestBulk")) if view else False
-        accent = QColor("#6f99c1" if dark else "#4c9af0")
+        quick = bool(view.property("singleAction")) if view else False
+        hovered_row = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        selected_bg = "#15263c" if dark else "#eef0e7" if quick else "#eaf4fc"
+        card_bg = "#141414" if dark else "#fffdf8" if quick else "#ffffff"
+        muted = QColor("#929dab" if dark else "#889397")
+        kind_key = record.get("kind", "text")
+        kind = KINDS.get(kind_key, "文本")
+        palette = {"text": ("#6f8398", "#eef3f8"), "code": ("#5486b1", "#eaf2fb"),
+                   "url": ("#538f86", "#eaf5f1"), "email": ("#8c79a8", "#f3eef9"),
+                   "image": ("#a17c53", "#faf1e5"), "color": ("#bd8292", "#faeef2")}
+        tint, tile = palette.get(kind_key, palette["text"])
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(option.rect).adjusted(3, 3, -3, -3)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(("#13243a" if dark else "#e9f3ff") if selected else ("#141414" if dark else "#ffffff")))
-        painter.drawRoundedRect(rect, 8, 8)
+        border = "#2b4b70" if dark and selected else "#c8dfe8" if selected and not quick else "#d8dfcc" if selected else "#26313e" if dark and hovered_row else "#39312a" if dark and quick else "#252525" if dark else "#ece6dc" if quick else "#e7eef3"
+        painter.setPen(QPen(QColor(border), 1))
+        painter.setBrush(QColor(selected_bg if selected else card_bg))
+        painter.drawRoundedRect(rect, 11, 11)
         delete_rect = _delete_rect(option.rect)
-        left = rect.left() + (41 if bulk else 13)
+        icon_left = rect.left() + (40 if bulk else 12)
+        icon_rect = QRectF(icon_left, rect.top() + 16, 36, 36)
+        left = icon_rect.right() + 11
         right = delete_rect.left() - 10
         text_width = max(0, int(right - left))
         if bulk:
-            checkbox = QRectF(rect.left() + 13, rect.center().y() - 8, 16, 16)
+            checkbox = QRectF(rect.left() + 12, rect.center().y() - 8, 16, 16)
             painter.setPen(QPen(QColor("#356893" if selected and dark else "#2e86e4" if selected else "#77818d"), 1))
             painter.setBrush(QColor("#245b90" if dark else "#2e86e4") if selected else QColor("#141414" if dark else "#ffffff"))
             painter.drawRoundedRect(checkbox, 4, 4)
@@ -160,6 +268,21 @@ class HistoryDelegate(QStyledItemDelegate):
                 painter.setPen(QPen(QColor("#ffffff"), 1.6))
                 painter.drawLine(checkbox.left() + 4, checkbox.top() + 8, checkbox.left() + 7, checkbox.top() + 11)
                 painter.drawLine(checkbox.left() + 7, checkbox.top() + 11, checkbox.left() + 12, checkbox.top() + 5)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#1e2c3b" if dark else tile))
+        painter.drawRoundedRect(icon_rect, 9, 9)
+        thumbnail = self._thumbnail(record) if kind_key == "image" else QPixmap()
+        if thumbnail.isNull():
+            self._type_icon(painter, kind_key, icon_rect, QColor("#8da9c9" if dark else tint))
+        else:
+            painter.save()
+            clip = QPainterPath()
+            clip.addRoundedRect(icon_rect, 9, 9)
+            painter.setClipPath(clip)
+            scaled = thumbnail.scaled(QSize(36, 36), Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            source = QRectF((scaled.width() - 36) / 2, (scaled.height() - 36) / 2, 36, 36)
+            painter.drawPixmap(icon_rect, scaled, source)
+            painter.restore()
         hovered = view and view.property("clipnestDeleteHoverRow") == index.row()
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#382125" if dark else "#fff0f1") if hovered else Qt.BrushStyle.NoBrush)
@@ -171,30 +294,31 @@ class HistoryDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(QRectF(cx - 5, cy - 4, 10, 12), 1, 1)
         painter.drawLine(cx - 2, cy - 1, cx - 2, cy + 5)
         painter.drawLine(cx + 2, cy - 1, cx + 2, cy + 5)
-        kind = KINDS.get(record.get("kind"), record.get("kind", "文本"))
-        indicators = ("  ★" if record.get("favorite") else "") + ("  ↑ 置顶" if record.get("pinned") else "")
-        painter.setPen(accent)
+        title, summary = self._summary(record)
         font = QFont(option.font)
-        font.setPointSize(9)
-        painter.setFont(font)
-        label = painter.fontMetrics().elidedText(kind + indicators, Qt.TextElideMode.ElideRight, text_width)
-        painter.drawText(QRectF(left, rect.top() + 10, text_width, 22), Qt.AlignmentFlag.AlignTop, label)
-        painter.setPen(QColor("#eeeeee" if dark else "#23344c"))
         font.setPointSize(10)
+        font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(font)
-        text = record.get("title") or record.get("text") or f"图片 {record.get('width', 0)} × {record.get('height', 0)}"
-        text = " ".join(text[:300].split())
-        text = painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, text_width)
-        painter.drawText(QRectF(left, rect.top() + 33, text_width, 25), Qt.AlignmentFlag.AlignTop, text)
-        painter.setPen(QColor("#999fa9" if dark else "#7e8fa3"))
+        painter.setPen(QColor("#e7edf4" if dark else "#354457"))
+        title = painter.fontMetrics().elidedText(" ".join(str(title)[:300].split()), Qt.TextElideMode.ElideRight, text_width)
+        painter.drawText(QRectF(left, rect.top() + 10, text_width, 23), Qt.AlignmentFlag.AlignVCenter, title)
         font.setPointSize(9)
+        font.setWeight(QFont.Weight.Normal)
         painter.setFont(font)
+        painter.setPen(QColor("#a4adb8" if dark else "#74818c"))
+        summary = painter.fontMetrics().elidedText(" ".join(str(summary)[:300].split()), Qt.TextElideMode.ElideRight, text_width)
+        painter.drawText(QRectF(left, rect.top() + 34, text_width, 21), Qt.AlignmentFlag.AlignVCenter, summary)
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(muted)
         stamp = record.get("last_copied_at", "")
         try:
             stamp = datetime.fromisoformat(stamp).astimezone().strftime("%m-%d  %H:%M")
-        except ValueError:
-            stamp = stamp[:16]
-        suffix = " · " + ", ".join(record.get("tags", [])[:2]) if record.get("tags") else ""
-        foot = painter.fontMetrics().elidedText(stamp + suffix, Qt.TextElideMode.ElideRight, text_width)
-        painter.drawText(QRectF(left, rect.top() + 64, text_width, 22), Qt.AlignmentFlag.AlignTop, foot)
+        except (ValueError, TypeError):
+            stamp = str(stamp)[:16]
+        indicators = (" · 收藏" if record.get("favorite") else "") + (" · 置顶" if record.get("pinned") else "")
+        tags = record.get("tags", []) or []
+        suffix = " · " + ", ".join(tags[:2]) if tags else ""
+        foot = painter.fontMetrics().elidedText(kind + " · " + stamp + indicators + suffix, Qt.TextElideMode.ElideRight, text_width)
+        painter.drawText(QRectF(left, rect.top() + 61, text_width, 18), Qt.AlignmentFlag.AlignVCenter, foot)
         painter.restore()

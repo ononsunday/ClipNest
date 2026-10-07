@@ -26,7 +26,9 @@ def app_icon():
 
 def apply_theme(app, mode):
     dark = mode == "dark"
-    bg, panel, fg, muted, border = ("#090909", "#141414", "#f1f3f6", "#999fa9", "#2a2a2a") if dark else ("#f2f7fd", "#ffffff", "#18263b", "#697c94", "#e0e9f3")
+    bg, panel, fg, muted, border = ("#090909", "#141414", "#f1f3f6", "#999fa9", "#2a2a2a") if dark else ("#f3f8fc", "#ffffff", "#25344a", "#7a8798", "#dce8f0")
+    quick_bg = "#090909" if dark else "#fbf7ef"
+    quick_border = "#283442" if dark else "#e5ddcf"
     accent = "#6f99c1" if dark else "#4c9af0"
     focus = "#286aab" if dark else "#4698f4"
     primary = "#194b79" if dark else "#2e86e4"
@@ -40,15 +42,27 @@ def apply_theme(app, mode):
         QWidget {{ color:{fg}; font-family:'Microsoft YaHei UI'; font-size:13px; }}
         QMainWindow, QDialog {{ background:{bg}; }}
         QDialog#quickWindow {{ background:transparent; }}
-        QWidget#quickCard {{ background:{bg}; border:1px solid {border}; border-radius:14px; }}
-        QWidget#dragHeader {{ background:{bg}; border:0; }}
+        QWidget#quickCard {{ background:{quick_bg}; border:1px solid {quick_border}; border-radius:18px; }}
+        QWidget#dragHeader {{ background:{quick_bg}; border:0; border-radius:10px; }}
+        QWidget#appHeader {{ background:{panel}; border-bottom:1px solid {border}; }}
+        QWidget#workspace {{ background:transparent; border:0; }}
+        QWidget#detailPanel {{ background:{panel}; border:1px solid {border}; border-radius:14px; }}
         QWidget#sidebar {{ background:{panel}; border-right:1px solid {border}; }}
         QLabel#brand {{ font-size:25px; font-weight:700; color:{accent}; }}
+        QLabel#quickBrand {{ font-size:23px; font-weight:700; color:{'#8da9cb' if dark else '#425f7e'}; }}
+        QLabel#localStatus {{ color:{'#86a3a3' if dark else '#698b83'}; font-size:11px; }}
+        QLabel#sectionHint {{ color:{muted}; font-size:11px; }}
+        QLabel#artCredit {{ color:{muted}; font-size:10px; }}
+        QLabel#emptyTitle {{ color:{fg}; font-size:17px; font-weight:600; }}
+        QLabel#emptyCaption {{ color:{muted}; font-size:12px; }}
         QLabel#heading {{ font-size:23px; font-weight:600; }}
         QLabel#muted {{ color:{muted}; }}
         QLabel#detailTitle {{ font-size:19px; font-weight:600; }}
         QLineEdit, QPlainTextEdit, QTextBrowser, QSpinBox, QComboBox {{ background:{panel}; border:1px solid {border}; border-radius:8px; padding:8px; selection-background-color:{selection}; selection-color:white; }}
         QLineEdit:focus, QPlainTextEdit:focus {{ border:1px solid {focus}; }}
+        QLineEdit#searchField {{ border-radius:10px; padding:10px 13px; }}
+        QWidget#quickCard QLineEdit#searchField {{ background:{'#141414' if dark else '#fffdf9'}; border-color:{quick_border}; }}
+        QWidget#quickCard QLineEdit#searchField:focus {{ border-color:{focus}; }}
         QComboBox::drop-down {{ border:0; width:24px; }}
         QComboBox QAbstractItemView {{ background:{panel}; border:1px solid {border}; selection-background-color:{selected}; selection-color:{fg}; }}
         QCheckBox {{ spacing:6px; }}
@@ -58,7 +72,8 @@ def apply_theme(app, mode):
         QListView::item:selected {{ background:{selected}; color:{fg}; }}
         QListView::item:hover {{ background:{hover}; }}
         QListWidget#navigation {{ border:0; background:transparent; }}
-        QListWidget#navigation::item {{ padding:12px 10px; border-radius:8px; margin:2px; }}
+        QListWidget#navigation::item {{ padding:2px 8px; border-radius:10px; margin:2px 5px; }}
+        QListWidget#navigation::item:hover {{ background:{hover}; }}
         QListWidget#navigation::item:selected {{ background:{selected}; color:{accent}; }}
         QPushButton {{ background:{panel}; border:1px solid {border}; border-radius:8px; padding:8px 12px; }}
         QPushButton:hover {{ border-color:{focus if dark else '#529cf0'}; background:{hover}; }}
@@ -66,6 +81,11 @@ def apply_theme(app, mode):
         QPushButton#primary {{ background:{primary}; color:white; border:0; font-weight:600; }}
         QPushButton#primary:hover {{ background:{primary_hover}; }}
         QPushButton#danger {{ color:#e15f68; }}
+        QPushButton#sidebarPause {{ background:transparent; color:{muted}; border-color:{border}; text-align:left; padding:9px 10px; }}
+        QPushButton#sidebarPause:hover {{ background:{hover}; color:{fg}; }}
+        QPushButton#quickChip {{ background:{'#141414' if dark else '#fffdf9'}; color:{muted}; border-color:{quick_border}; padding:6px 10px; border-radius:9px; }}
+        QPushButton#quickChip:checked {{ background:{selected}; border-color:{'#285580' if dark else '#b5d0e5'}; color:{'#9abbdc' if dark else '#426584'}; }}
+        QWidget#quickCard QListWidget {{ background:transparent; border-color:{quick_border}; border-radius:12px; padding:5px; }}
         QStatusBar {{ color:{muted}; background:{bg}; }}
         QSplitter::handle {{ background:{bg}; width:10px; }}
         QScrollBar:vertical {{ background:transparent; width:8px; }}
